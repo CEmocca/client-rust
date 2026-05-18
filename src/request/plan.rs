@@ -194,7 +194,7 @@ where
                     backoff,
                     permits,
                     preserve_region_results,
-                    replica_read,
+                    false,
                     Error::LeaderNotFound { region },
                 )
                 .await;
@@ -214,6 +214,7 @@ where
             Ok(resp) => resp,
             Err(e) if is_grpc_error(&e) => {
                 debug!("single_shard_handler:execute: grpc error: {:?}", e);
+                // Follower unreachable — fall back to leader for the retry.
                 return Self::handle_other_error(
                     pd_client,
                     plan,
@@ -222,7 +223,7 @@ where
                     backoff,
                     permits,
                     preserve_region_results,
-                    replica_read,
+                    false,
                     e,
                 )
                 .await;
@@ -246,13 +247,17 @@ where
                     if !region_error_resolved {
                         sleep(duration).await;
                     }
+                    // Fall back to leader routing on retry: a replica that returned a
+                    // region error (e.g. not_leader) is not serving reads, so retrying
+                    // via a follower would just loop. Route to the leader to recover,
+                    // then replicas will be used again on the next fresh request.
                     Self::single_plan_handler(
                         pd_client,
                         plan,
                         backoff,
                         permits,
                         preserve_region_results,
-                        replica_read,
+                        false,
                     )
                     .await
                 }
