@@ -73,6 +73,12 @@ macro_rules! impl_request {
             fn set_replica_read(&mut self, replica_read: bool) {
                 let ctx = self.context.get_or_insert(kvrpcpb::Context::default());
                 ctx.replica_read = replica_read;
+                // stale_read bypasses the ReadIndex Raft RPC that replica_read
+                // alone triggers. Without it, every follower read causes the follower
+                // to contact the leader before serving, which saturates the raftstore
+                // pool at high RPS. stale_read lets the follower serve from its local
+                // committed state directly (data may lag the leader by <1ms).
+                ctx.stale_read = replica_read;
             }
         }
     };
