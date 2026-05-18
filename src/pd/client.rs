@@ -250,22 +250,22 @@ impl<KvC: KvConnect + Send + Sync + 'static> PdClient for PdRpcClient<KvC> {
         self: Arc<Self>,
         region: RegionWithLeader,
     ) -> Result<RegionStore> {
-        let follower = region
-            .pick_follower()
+        let peer = region
+            .pick_any_peer()
             .ok_or_else(|| Error::LeaderNotFound {
                 region: region.ver_id(),
             })?
             .clone();
-        let store = self.region_cache.get_store_by_id(follower.store_id).await?;
+        let store = self.region_cache.get_store_by_id(peer.store_id).await?;
         let kv_client = self.kv_client(&store.address).await?;
-        // Rewrite the region's "leader" to the chosen follower so that set_leader()
-        // stamps ctx.peer with the follower peer — TiKV uses ctx.peer to route the
+        // Rewrite the region's "leader" to the chosen peer so that set_leader()
+        // stamps ctx.peer with that peer — TiKV uses ctx.peer to route the
         // replica read to the correct node.
-        let region_with_follower = RegionWithLeader {
+        let region_with_peer = RegionWithLeader {
             region: region.region,
-            leader: Some(follower),
+            leader: Some(peer),
         };
-        Ok(RegionStore::new(region_with_follower, Arc::new(kv_client)))
+        Ok(RegionStore::new(region_with_peer, Arc::new(kv_client)))
     }
 
     async fn region_for_key(&self, key: &Key) -> Result<RegionWithLeader> {

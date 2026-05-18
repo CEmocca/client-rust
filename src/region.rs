@@ -78,25 +78,25 @@ impl RegionWithLeader {
             .map(|s| s.store_id)
     }
 
-    /// Pick a random follower peer (any peer that is not the current leader).
-    /// Falls back to the leader if there are no followers (single-node cluster).
-    pub fn pick_follower(&self) -> Option<&metapb::Peer> {
-        let leader_id = self.leader.as_ref().map(|p| p.id);
-        let followers: Vec<&metapb::Peer> = self
+    /// Pick a peer round-robin across all voter peers (leader + followers).
+    /// Learner peers are excluded because they cannot serve raw reads.
+    /// Falls back to the leader if no voter peers are found.
+    pub fn pick_any_peer(&self) -> Option<&metapb::Peer> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        // role == 0 (Voter) or role == 2 (IncomingVoter) can serve reads;
+        // role == 1 (Learner) and role == 3 (DemotingVoter) cannot.
+        let voters: Vec<&metapb::Peer> = self
             .region
             .peers
             .iter()
-            .filter(|p| Some(p.id) != leader_id)
+            .filter(|p| p.role == 0 || p.role == 2)
             .collect();
-        if followers.is_empty() {
+        if voters.is_empty() {
             self.leader.as_ref()
         } else {
-            let idx = (std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .subsec_nanos() as usize)
-                % followers.len();
-            Some(followers[idx])
+            let idx = COUNTER.fetch_add(1, Ordering::Relaxed) % voters.len();
+            Some(voters[idx])
         }
     }
 }
