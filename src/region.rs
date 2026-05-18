@@ -77,4 +77,26 @@ impl RegionWithLeader {
             })
             .map(|s| s.store_id)
     }
+
+    /// Pick a random follower peer (any peer that is not the current leader).
+    /// Falls back to the leader if there are no followers (single-node cluster).
+    pub fn pick_follower(&self) -> Option<&metapb::Peer> {
+        let leader_id = self.leader.as_ref().map(|p| p.id);
+        let followers: Vec<&metapb::Peer> = self
+            .region
+            .peers
+            .iter()
+            .filter(|p| Some(p.id) != leader_id)
+            .collect();
+        if followers.is_empty() {
+            self.leader.as_ref()
+        } else {
+            let idx = (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .subsec_nanos() as usize)
+                % followers.len();
+            Some(followers[idx])
+        }
+    }
 }

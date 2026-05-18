@@ -272,11 +272,15 @@ impl<PdC: PdClient> Client<PdC> {
         let key = key.into().encode_keyspace(self.keyspace, KeyMode::Raw);
         let mut request = new_raw_get_request(key, self.cf.clone());
         request.set_replica_read(self.replica_read);
-        let plan = crate::request::PlanBuilder::new(self.rpc.clone(), self.keyspace, request)
-            .retry_multi_region(self.backoff.clone())
-            .merge(CollectSingle)
-            .post_process_default()
-            .plan();
+        let builder = crate::request::PlanBuilder::new(self.rpc.clone(), self.keyspace, request);
+        let plan = if self.replica_read {
+            builder.retry_multi_region_replica(self.backoff.clone())
+        } else {
+            builder.retry_multi_region(self.backoff.clone())
+        }
+        .merge(CollectSingle)
+        .post_process_default()
+        .plan();
         plan.execute().await
     }
 
@@ -308,10 +312,14 @@ impl<PdC: PdClient> Client<PdC> {
             .map(|k| k.into().encode_keyspace(self.keyspace, KeyMode::Raw));
         let mut request = new_raw_batch_get_request(keys, self.cf.clone());
         request.set_replica_read(self.replica_read);
-        let plan = crate::request::PlanBuilder::new(self.rpc.clone(), self.keyspace, request)
-            .retry_multi_region(self.backoff.clone())
-            .merge(Collect)
-            .plan();
+        let builder = crate::request::PlanBuilder::new(self.rpc.clone(), self.keyspace, request);
+        let plan = if self.replica_read {
+            builder.retry_multi_region_replica(self.backoff.clone())
+        } else {
+            builder.retry_multi_region(self.backoff.clone())
+        }
+        .merge(Collect)
+        .plan();
         plan.execute().await.map(|r| {
             r.into_iter()
                 .map(|pair| pair.truncate_keyspace(self.keyspace))
@@ -340,11 +348,15 @@ impl<PdC: PdClient> Client<PdC> {
         let key = key.into().encode_keyspace(self.keyspace, KeyMode::Raw);
         let mut request = new_raw_get_key_ttl_request(key, self.cf.clone());
         request.set_replica_read(self.replica_read);
-        let plan = crate::request::PlanBuilder::new(self.rpc.clone(), self.keyspace, request)
-            .retry_multi_region(self.backoff.clone())
-            .merge(CollectSingle)
-            .post_process_default()
-            .plan();
+        let builder = crate::request::PlanBuilder::new(self.rpc.clone(), self.keyspace, request);
+        let plan = if self.replica_read {
+            builder.retry_multi_region_replica(self.backoff.clone())
+        } else {
+            builder.retry_multi_region(self.backoff.clone())
+        }
+        .merge(CollectSingle)
+        .post_process_default()
+        .plan();
         plan.execute().await
     }
 
@@ -848,7 +860,11 @@ impl<PdC: PdClient> Client<PdC> {
         let end_key = scan_args.end_key;
         loop {
             let region = self.rpc.clone().region_for_key(&start_key).await?;
-            let store = self.rpc.clone().store_for_id(region.id()).await?;
+            let store = if self.replica_read {
+                self.rpc.clone().store_for_id_replica(region.id()).await?
+            } else {
+                self.rpc.clone().store_for_id(region.id()).await?
+            };
             let mut request = new_raw_scan_request(
                 (start_key.clone(), end_key.clone()).into(),
                 scan_args.limit,
@@ -912,10 +928,14 @@ impl<PdC: PdClient> Client<PdC> {
 
         let mut request = new_raw_batch_scan_request(ranges, each_limit, key_only, self.cf.clone());
         request.set_replica_read(self.replica_read);
-        let plan = crate::request::PlanBuilder::new(self.rpc.clone(), self.keyspace, request)
-            .retry_multi_region(self.backoff.clone())
-            .merge(Collect)
-            .plan();
+        let builder = crate::request::PlanBuilder::new(self.rpc.clone(), self.keyspace, request);
+        let plan = if self.replica_read {
+            builder.retry_multi_region_replica(self.backoff.clone())
+        } else {
+            builder.retry_multi_region(self.backoff.clone())
+        }
+        .merge(Collect)
+        .plan();
         plan.execute().await.map(|r| {
             r.into_iter()
                 .map(|pair| pair.truncate_keyspace(self.keyspace))

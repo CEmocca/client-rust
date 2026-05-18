@@ -28,6 +28,7 @@ use crate::store::TikvConnect;
 use crate::store::{KvClient, Store};
 use crate::BoundRange;
 use crate::Config;
+use crate::Error;
 use crate::Key;
 use crate::Result;
 use crate::SecurityManager;
@@ -78,6 +79,21 @@ pub trait PdClient: Send + Sync + 'static {
     async fn store_for_id(self: Arc<Self>, id: RegionId) -> Result<RegionStore> {
         let region = self.region_for_id(id).await?;
         self.map_region_to_store(region).await
+    }
+
+    /// Like `map_region_to_store`, but routes to a randomly chosen follower peer instead of the
+    /// leader. The returned `RegionStore` has the follower peer recorded in the region's leader
+    /// field so that `set_leader` stamps the correct `ctx.peer` on the request.
+    async fn map_region_to_store_replica(
+        self: Arc<Self>,
+        region: RegionWithLeader,
+    ) -> Result<RegionStore> {
+        self.map_region_to_store(region).await
+    }
+
+    async fn store_for_id_replica(self: Arc<Self>, id: RegionId) -> Result<RegionStore> {
+        let region = self.region_for_id(id).await?;
+        self.map_region_to_store_replica(region).await
     }
 
     async fn all_stores(&self) -> Result<Vec<Store>>;
@@ -228,6 +244,28 @@ impl<KvC: KvConnect + Send + Sync + 'static> PdClient for PdRpcClient<KvC> {
         let store = self.region_cache.get_store_by_id(store_id).await?;
         let kv_client = self.kv_client(&store.address).await?;
         Ok(RegionStore::new(region, Arc::new(kv_client)))
+    }
+
+    async fn map_region_to_store_replica(
+        self: Arc<Self>,
+        region: RegionWithLeader,
+    ) -> Result<RegionStore> {
+        let follower = region
+            .pick_follower()
+            .ok_or_else(|| Error::LeaderNotFound {
+                region: region.ver_id(),
+            })?
+            .clone();
+        let store = self.region_cache.get_store_by_id(follower.store_id).await?;
+        let kv_client = self.kv_client(&store.address).await?;
+        // Rewrite the region's "leader" to the chosen follower so that set_leader()
+        // stamps ctx.peer with the follower peer — TiKV uses ctx.peer to route the
+        // replica read to the correct node.
+        let region_with_follower = RegionWithLeader {
+            region: region.region,
+            leader: Some(follower),
+        };
+        Ok(RegionStore::new(region_with_follower, Arc::new(kv_client)))
     }
 
     async fn region_for_key(&self, key: &Key) -> Result<RegionWithLeader> {
