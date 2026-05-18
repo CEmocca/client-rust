@@ -22,7 +22,7 @@ use crate::request::Keyspace;
 use crate::request::Plan;
 use crate::request::TruncateKeyspace;
 use crate::request::{plan, Collect};
-use crate::store::{HasRegionError, RegionStore};
+use crate::store::{HasRegionError, RegionStore, Request};
 use crate::Backoff;
 use crate::BoundRange;
 use crate::ColumnFamily;
@@ -48,6 +48,8 @@ pub struct Client<PdC: PdClient = PdRpcClient> {
     /// Whether to use the [`atomic mode`](Client::with_atomic_for_cas).
     atomic: bool,
     keyspace: Keyspace,
+    /// Whether to allow reads from replica peers instead of only the region leader.
+    replica_read: bool,
 }
 
 impl Clone for Client {
@@ -58,6 +60,7 @@ impl Clone for Client {
             backoff: self.backoff.clone(),
             atomic: self.atomic,
             keyspace: self.keyspace,
+            replica_read: self.replica_read,
         }
     }
 }
@@ -126,6 +129,7 @@ impl Client<PdRpcClient> {
             backoff: DEFAULT_REGION_BACKOFF,
             atomic: false,
             keyspace,
+            replica_read: false,
         })
     }
 
@@ -161,6 +165,7 @@ impl Client<PdRpcClient> {
             backoff: self.backoff.clone(),
             atomic: self.atomic,
             keyspace: self.keyspace,
+            replica_read: self.replica_read,
         }
     }
 
@@ -190,6 +195,7 @@ impl Client<PdRpcClient> {
             backoff,
             atomic: self.atomic,
             keyspace: self.keyspace,
+            replica_read: self.replica_read,
         }
     }
 
@@ -208,6 +214,36 @@ impl Client<PdRpcClient> {
             backoff: self.backoff.clone(),
             atomic: true,
             keyspace: self.keyspace,
+            replica_read: self.replica_read,
+        }
+    }
+
+    /// Allow read requests to be served by replica peers, not only the region leader.
+    ///
+    /// Replica reads can reduce read load on the leader and improve throughput at the cost of
+    /// potentially reading slightly stale data. Write operations are unaffected.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// # use tikv_client::RawClient;
+    /// # use futures::prelude::*;
+    /// # futures::executor::block_on(async {
+    /// let client = RawClient::new(vec!["192.168.0.100"])
+    ///     .await
+    ///     .unwrap()
+    ///     .with_replica_read();
+    /// let result = client.get("foo".to_owned()).await.unwrap();
+    /// # });
+    /// ```
+    #[must_use]
+    pub fn with_replica_read(&self) -> Self {
+        Client {
+            rpc: self.rpc.clone(),
+            cf: self.cf.clone(),
+            backoff: self.backoff.clone(),
+            atomic: self.atomic,
+            keyspace: self.keyspace,
+            replica_read: true,
         }
     }
 }
@@ -234,7 +270,8 @@ impl<PdC: PdClient> Client<PdC> {
     pub async fn get(&self, key: impl Into<Key>) -> Result<Option<Value>> {
         debug!("invoking raw get request");
         let key = key.into().encode_keyspace(self.keyspace, KeyMode::Raw);
-        let request = new_raw_get_request(key, self.cf.clone());
+        let mut request = new_raw_get_request(key, self.cf.clone());
+        request.set_replica_read(self.replica_read);
         let plan = crate::request::PlanBuilder::new(self.rpc.clone(), self.keyspace, request)
             .retry_multi_region(self.backoff.clone())
             .merge(CollectSingle)
@@ -269,7 +306,8 @@ impl<PdC: PdClient> Client<PdC> {
         let keys = keys
             .into_iter()
             .map(|k| k.into().encode_keyspace(self.keyspace, KeyMode::Raw));
-        let request = new_raw_batch_get_request(keys, self.cf.clone());
+        let mut request = new_raw_batch_get_request(keys, self.cf.clone());
+        request.set_replica_read(self.replica_read);
         let plan = crate::request::PlanBuilder::new(self.rpc.clone(), self.keyspace, request)
             .retry_multi_region(self.backoff.clone())
             .merge(Collect)
@@ -300,7 +338,8 @@ impl<PdC: PdClient> Client<PdC> {
     pub async fn get_key_ttl_secs(&self, key: impl Into<Key>) -> Result<Option<u64>> {
         debug!("invoking raw get_key_ttl_secs request");
         let key = key.into().encode_keyspace(self.keyspace, KeyMode::Raw);
-        let request = new_raw_get_key_ttl_request(key, self.cf.clone());
+        let mut request = new_raw_get_key_ttl_request(key, self.cf.clone());
+        request.set_replica_read(self.replica_read);
         let plan = crate::request::PlanBuilder::new(self.rpc.clone(), self.keyspace, request)
             .retry_multi_region(self.backoff.clone())
             .merge(CollectSingle)
@@ -810,13 +849,14 @@ impl<PdC: PdClient> Client<PdC> {
         loop {
             let region = self.rpc.clone().region_for_key(&start_key).await?;
             let store = self.rpc.clone().store_for_id(region.id()).await?;
-            let request = new_raw_scan_request(
+            let mut request = new_raw_scan_request(
                 (start_key.clone(), end_key.clone()).into(),
                 scan_args.limit,
                 scan_args.key_only,
                 scan_args.reverse,
                 self.cf.clone(),
             );
+            request.set_replica_read(self.replica_read);
             let resp = self.do_store_scan(store.clone(), request.clone()).await;
             return match resp {
                 Ok(mut r) => {
@@ -870,7 +910,8 @@ impl<PdC: PdClient> Client<PdC> {
             .into_iter()
             .map(|range| range.into().encode_keyspace(self.keyspace, KeyMode::Raw));
 
-        let request = new_raw_batch_scan_request(ranges, each_limit, key_only, self.cf.clone());
+        let mut request = new_raw_batch_scan_request(ranges, each_limit, key_only, self.cf.clone());
+        request.set_replica_read(self.replica_read);
         let plan = crate::request::PlanBuilder::new(self.rpc.clone(), self.keyspace, request)
             .retry_multi_region(self.backoff.clone())
             .merge(Collect)
@@ -940,6 +981,7 @@ mod tests {
             backoff: DEFAULT_REGION_BACKOFF,
             atomic: false,
             keyspace: Keyspace::Enable { keyspace_id: 0 },
+            replica_read: false,
         };
         let pairs = vec![
             KvPair(vec![11].into(), vec![12]),
@@ -973,6 +1015,7 @@ mod tests {
             backoff: DEFAULT_REGION_BACKOFF,
             atomic: false,
             keyspace: Keyspace::Enable { keyspace_id: 0 },
+            replica_read: false,
         };
         let resps = client
             .coprocessor(

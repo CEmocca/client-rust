@@ -544,6 +544,10 @@ impl Request for RawCoprocessorRequest {
     fn set_api_version(&mut self, api_version: kvrpcpb::ApiVersion) {
         self.inner.set_api_version(api_version);
     }
+
+    fn set_replica_read(&mut self, replica_read: bool) {
+        self.inner.set_replica_read(replica_read);
+    }
 }
 
 impl KvRequest for RawCoprocessorRequest {
