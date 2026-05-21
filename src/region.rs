@@ -77,4 +77,26 @@ impl RegionWithLeader {
             })
             .map(|s| s.store_id)
     }
+
+    /// Pick a peer round-robin across all voter peers (leader + followers).
+    /// Learner peers are excluded because they cannot serve raw reads.
+    /// Falls back to the leader if no voter peers are found.
+    pub fn pick_any_peer(&self) -> Option<&metapb::Peer> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        // role == 0 (Voter) or role == 2 (IncomingVoter) can serve reads;
+        // role == 1 (Learner) and role == 3 (DemotingVoter) cannot.
+        let voters: Vec<&metapb::Peer> = self
+            .region
+            .peers
+            .iter()
+            .filter(|p| p.role == 0 || p.role == 2)
+            .collect();
+        if voters.is_empty() {
+            self.leader.as_ref()
+        } else {
+            let idx = COUNTER.fetch_add(1, Ordering::Relaxed) % voters.len();
+            Some(voters[idx])
+        }
+    }
 }

@@ -153,6 +153,8 @@ mod test {
             }
 
             fn set_api_version(&mut self, _: kvrpcpb::ApiVersion) {}
+
+            fn set_replica_read(&mut self, _: bool) {}
         }
 
         #[async_trait]
