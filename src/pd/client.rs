@@ -312,7 +312,12 @@ impl<KvC: KvConnect + Send + Sync + 'static> PdClient for PdRpcClient<KvC> {
     }
 
     async fn invalidate_store_cache(&self, store_id: StoreId) {
-        self.region_cache.invalidate_store_cache(store_id).await
+        self.region_cache.invalidate_store_cache(store_id).await;
+        // Also flush the gRPC connection cache. The kv_client_cache maps store
+        // addresses to live connections; we can't look up the address by StoreId
+        // here, so we clear the whole map. It has one entry per TiKV node (≤3
+        // entries in practice) and is rebuilt lazily on the next request.
+        self.kv_client_cache.write().await.clear();
     }
 
     async fn load_keyspace(&self, keyspace: &str) -> Result<keyspacepb::KeyspaceMeta> {

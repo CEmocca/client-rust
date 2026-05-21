@@ -8,7 +8,9 @@ use rand::thread_rng;
 use rand::Rng;
 
 pub const DEFAULT_REGION_BACKOFF: Backoff = Backoff::no_jitter_backoff(2, 500, 10);
-pub const DEFAULT_STORE_BACKOFF: Backoff = Backoff::no_jitter_backoff(2, 1000, 10);
+// 40 attempts with 2s cap gives a ~80s retry window — long enough to survive
+// a TiKV leader election (default timeout ~10s) plus Raft log catchup.
+pub const DEFAULT_STORE_BACKOFF: Backoff = Backoff::no_jitter_backoff(2, 2000, 40);
 pub const OPTIMISTIC_BACKOFF: Backoff = Backoff::no_jitter_backoff(2, 500, 10);
 pub const PESSIMISTIC_BACKOFF: Backoff = Backoff::no_jitter_backoff(2, 500, 10);
 
